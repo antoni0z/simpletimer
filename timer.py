@@ -383,9 +383,6 @@ class DeepWorkTimerApp:
 
         header = ttk.Frame(container, style="App.TFrame")
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 18))
-        ttk.Label(header, text="Deep Work Timer", style="Title.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
 
         left_panel = ttk.Frame(container, style="App.TFrame")
         left_panel.grid(row=1, column=0, sticky="nsew", padx=(0, 16))
