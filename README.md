@@ -40,4 +40,4 @@ python3 -m unittest discover -s tests
 
 - The app stores local data in `timer.db` next to the script.
 - `timer.db` is ignored by git so personal session history is not committed.
-- This project currently targets macOS because notifications are implemented with `osascript`.
+- This project currently targets macOS.
