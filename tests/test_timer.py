@@ -4,7 +4,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from timer import DeepWorkTimerApp, SessionStore, TimerConfig
+from timer import (
+    DEFAULT_CONFIG,
+    MAX_REST_MINUTES,
+    MAX_ROUNDS,
+    MAX_WORK_MINUTES,
+    DeepWorkTimerApp,
+    SessionStore,
+    TimerConfig,
+)
 
 
 class FakeWidget:
@@ -61,7 +69,20 @@ class SessionStoreTests(unittest.TestCase):
         self.store.connection.commit()
 
     def test_default_config_is_returned_when_settings_are_empty(self) -> None:
-        self.assertEqual(self.store.get_saved_config(), TimerConfig(50, 10, 4))
+        self.assertEqual(self.store.get_saved_config(), DEFAULT_CONFIG)
+
+    def test_invalid_saved_settings_fall_back_to_defaults(self) -> None:
+        with self.store.connection:
+            self.store.connection.executemany(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
+                [
+                    ("work_minutes", "abc"),
+                    ("rest_minutes", "-5"),
+                    ("rounds", str(MAX_ROUNDS + 1)),
+                ],
+            )
+
+        self.assertEqual(self.store.get_saved_config(), DEFAULT_CONFIG)
 
     def test_saved_config_round_trips_exactly(self) -> None:
         config = TimerConfig(work_minutes=90, rest_minutes=15, rounds=3)
@@ -92,6 +113,13 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual(stats.total_minutes, 15)
         self.assertAlmostEqual(stats.sessions_per_day_last_week, 1 / 7)
         self.assertAlmostEqual(stats.average_minutes_per_day_last_week, 15 / 7)
+
+    def test_record_work_session_rejects_out_of_range_values(self) -> None:
+        with self.assertRaises(ValueError):
+            self.store.record_work_session(0)
+
+        with self.assertRaises(ValueError):
+            self.store.record_work_session(MAX_WORK_MINUTES + 1)
 
     def test_stats_respect_time_windows_and_totals(self) -> None:
         now = datetime.now()
@@ -302,6 +330,24 @@ class InputValidationTests(unittest.TestCase):
             ("25", "-1", "4", "Rest minutes cannot be negative."),
             ("25", "10", "0", "Rounds must be greater than 0."),
             ("abc", "10", "4", "Use whole numbers for all fields."),
+            (
+                str(MAX_WORK_MINUTES + 1),
+                "10",
+                "4",
+                f"Work minutes must be {MAX_WORK_MINUTES} or less.",
+            ),
+            (
+                "25",
+                str(MAX_REST_MINUTES + 1),
+                "4",
+                f"Rest minutes must be {MAX_REST_MINUTES} or less.",
+            ),
+            (
+                "25",
+                "10",
+                str(MAX_ROUNDS + 1),
+                f"Rounds must be {MAX_ROUNDS} or less.",
+            ),
         ]
 
         for work, rest, rounds, message in cases:

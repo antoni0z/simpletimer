@@ -2,9 +2,6 @@ __pycache__/
 *.py[cod]
 .DS_Store
 
-# Local app data
-timer.db
-
 # Virtual environments
 .venv/
 venv/

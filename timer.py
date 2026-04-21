@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
+import sys
 import tkinter as tk
 from dataclasses import dataclass
 from datetime import datetime
@@ -9,9 +10,13 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Optional
 
-
-APP_DIR = Path(__file__).resolve().parent
-DB_PATH = APP_DIR / "timer.db"
+APP_NAME = "Deep Work Timer"
+APP_DIR_NAME = "DeepWorkTimer"
+MAX_WORK_MINUTES = 24 * 60
+MAX_REST_MINUTES = 24 * 60
+MAX_ROUNDS = 100
+OSASCRIPT_BIN = "/usr/bin/osascript"
+AFPLAY_BIN = "/usr/bin/afplay"
 MACOS_ALERT_SOUND = "/System/Library/Sounds/Glass.aiff"
 
 
@@ -20,6 +25,9 @@ class TimerConfig:
     work_minutes: int
     rest_minutes: int
     rounds: int
+
+
+DEFAULT_CONFIG = TimerConfig(work_minutes=90, rest_minutes=15, rounds=4)
 
 
 @dataclass
@@ -33,59 +41,113 @@ class SessionStats:
     average_minutes_per_day_last_week: float
 
 
+def _app_data_dir() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / APP_DIR_NAME
+    return Path.home() / ".local" / "share" / APP_DIR_NAME
+
+
+DB_PATH = _app_data_dir() / "timer.db"
+
+
+def _validate_config(config: TimerConfig) -> None:
+    if not 1 <= config.work_minutes <= MAX_WORK_MINUTES:
+        raise ValueError("work_minutes must be within the supported range")
+    if not 0 <= config.rest_minutes <= MAX_REST_MINUTES:
+        raise ValueError("rest_minutes must be within the supported range")
+    if not 1 <= config.rounds <= MAX_ROUNDS:
+        raise ValueError("rounds must be within the supported range")
+
+
 class SessionStore:
     def __init__(self, db_path: Path) -> None:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(db_path)
         self.connection.row_factory = sqlite3.Row
         self._initialize()
 
     def _initialize(self) -> None:
-        self.connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                completed_at TEXT NOT NULL,
-                work_minutes INTEGER NOT NULL
+        with self.connection:
+            self.connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    completed_at TEXT NOT NULL,
+                    work_minutes INTEGER NOT NULL
+                )
+                """
             )
-            """
-        )
-        self.connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
+            self.connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
             )
-            """
-        )
-        self.connection.commit()
+
+    def _coerce_setting(
+        self, values: dict[str, str], key: str, default: int, minimum: int, maximum: int
+    ) -> int:
+        raw_value = values.get(key)
+        try:
+            value = int(raw_value) if raw_value is not None else default
+        except ValueError:
+            return default
+
+        if minimum <= value <= maximum:
+            return value
+        return default
 
     def get_saved_config(self) -> TimerConfig:
         rows = self.connection.execute("SELECT key, value FROM settings").fetchall()
         values = {row["key"]: row["value"] for row in rows}
         return TimerConfig(
-            work_minutes=int(values.get("work_minutes", 50)),
-            rest_minutes=int(values.get("rest_minutes", 10)),
-            rounds=int(values.get("rounds", 4)),
+            work_minutes=self._coerce_setting(
+                values,
+                "work_minutes",
+                DEFAULT_CONFIG.work_minutes,
+                1,
+                MAX_WORK_MINUTES,
+            ),
+            rest_minutes=self._coerce_setting(
+                values,
+                "rest_minutes",
+                DEFAULT_CONFIG.rest_minutes,
+                0,
+                MAX_REST_MINUTES,
+            ),
+            rounds=self._coerce_setting(
+                values,
+                "rounds",
+                DEFAULT_CONFIG.rounds,
+                1,
+                MAX_ROUNDS,
+            ),
         )
 
     def save_config(self, config: TimerConfig) -> None:
+        _validate_config(config)
         items = {
             "work_minutes": str(config.work_minutes),
             "rest_minutes": str(config.rest_minutes),
             "rounds": str(config.rounds),
         }
-        self.connection.executemany(
-            "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
-            items.items(),
-        )
-        self.connection.commit()
+        with self.connection:
+            self.connection.executemany(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
+                items.items(),
+            )
 
     def record_work_session(self, work_minutes: int) -> None:
-        self.connection.execute(
-            "INSERT INTO sessions(completed_at, work_minutes) VALUES (?, ?)",
-            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), work_minutes),
-        )
-        self.connection.commit()
+        if not 1 <= work_minutes <= MAX_WORK_MINUTES:
+            raise ValueError("work_minutes must be within the supported range")
+
+        with self.connection:
+            self.connection.execute(
+                "INSERT INTO sessions(completed_at, work_minutes) VALUES (?, ?)",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), work_minutes),
+            )
 
     def get_stats(self) -> SessionStats:
         daily_row = self.connection.execute(
@@ -121,7 +183,9 @@ class SessionStore:
         weekly_average_minutes = 0.0
         first_completed_at = total_row["first_completed_at"]
         if first_completed_at:
-            first_date = datetime.strptime(first_completed_at, "%Y-%m-%d %H:%M:%S").date()
+            first_date = datetime.strptime(
+                first_completed_at, "%Y-%m-%d %H:%M:%S"
+            ).date()
             weeks_tracked = max(1, ((datetime.now().date() - first_date).days // 7) + 1)
             weekly_average_minutes = total_minutes / weeks_tracked
 
@@ -156,7 +220,7 @@ class DeepWorkTimerApp:
         self.current_round = 1
         self.remaining_seconds = self.saved_config.work_minutes * 60
 
-        self.root.title("Deep Work Timer")
+        self.root.title(APP_NAME)
         self.root.geometry("860x760")
         self.root.minsize(780, 740)
         self.root.configure(bg="#ece7df")
@@ -170,40 +234,40 @@ class DeepWorkTimerApp:
         self._update_timer_display()
 
     def _notify(self, title: str, message: str) -> None:
-        escaped_title = title.replace("\\", "\\\\").replace('"', '\\"')
-        escaped_message = message.replace("\\", "\\\\").replace('"', '\\"')
-        notification_script = (
-            f'display notification "{escaped_message}" with title "{escaped_title}" '
-            'subtitle "Deep Work Timer"'
+        self._run_background_command(
+            [
+                OSASCRIPT_BIN,
+                "-e",
+                "on run argv",
+                "-e",
+                f'display notification (item 1 of argv) with title (item 2 of argv) subtitle "{APP_NAME}"',
+                "-e",
+                "end run",
+                message,
+                title,
+            ]
         )
-        popup_script = (
-            f'display dialog "{escaped_message}" with title "{escaped_title}" '
-            'buttons {"OK"} default button "OK" giving up after 8'
+        self._run_background_command(
+            [
+                OSASCRIPT_BIN,
+                "-e",
+                "on run argv",
+                "-e",
+                'display dialog (item 1 of argv) with title (item 2 of argv) buttons {"OK"} default button "OK" giving up after 8',
+                "-e",
+                "end run",
+                message,
+                title,
+            ]
         )
-
-        try:
-            subprocess.Popen(
-                ["osascript", "-e", notification_script],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except OSError:
-            pass
-
-        try:
-            subprocess.Popen(
-                ["osascript", "-e", popup_script],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except OSError:
-            pass
 
         self.root.bell()
+        self._run_background_command([AFPLAY_BIN, MACOS_ALERT_SOUND])
 
+    def _run_background_command(self, command: list[str]) -> None:
         try:
             subprocess.Popen(
-                ["afplay", MACOS_ALERT_SOUND],
+                command,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -338,10 +402,14 @@ class DeepWorkTimerApp:
             row=0, column=0, sticky="w"
         )
 
-        self.phase_label = ttk.Label(timer_card, text="Ready to focus", style="Body.TLabel")
+        self.phase_label = ttk.Label(
+            timer_card, text="Ready to focus", style="Body.TLabel"
+        )
         self.phase_label.grid(row=1, column=0, sticky="w", pady=(12, 0))
 
-        self.round_label = ttk.Label(timer_card, text="Round 1 of 4", style="Muted.TLabel")
+        self.round_label = ttk.Label(
+            timer_card, text="Round 1 of 4", style="Muted.TLabel"
+        )
         self.round_label.grid(row=2, column=0, sticky="w", pady=(4, 12))
 
         self.timer_label = ttk.Label(timer_card, text="50:00", style="Timer.TLabel")
@@ -491,7 +559,9 @@ class DeepWorkTimerApp:
             row=6, column=2, sticky="w", pady=(6, 4)
         )
 
-        self.daily_hours_value_label = ttk.Label(stats_card, text="0.0h", style="Metric.TLabel")
+        self.daily_hours_value_label = ttk.Label(
+            stats_card, text="0.0h", style="Metric.TLabel"
+        )
         self.daily_hours_value_label.grid(row=7, column=0, sticky="nw")
         self.daily_hours_detail_label = ttk.Label(
             stats_card,
@@ -513,7 +583,9 @@ class DeepWorkTimerApp:
         )
         self.weekly_hours_detail_label.grid(row=8, column=1, sticky="nw", pady=(6, 0))
 
-        self.total_hours_value_label = ttk.Label(stats_card, text="0.0h", style="Metric.TLabel")
+        self.total_hours_value_label = ttk.Label(
+            stats_card, text="0.0h", style="Metric.TLabel"
+        )
         self.total_hours_value_label.grid(row=7, column=2, sticky="nw")
         self.total_hours_detail_label = ttk.Label(
             stats_card,
@@ -529,7 +601,9 @@ class DeepWorkTimerApp:
         frame.grid(row=row, column=0, sticky="ew", pady=(14, 0))
         frame.columnconfigure(0, weight=1)
 
-        ttk.Label(frame, text=label, style="Body.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text=label, style="Body.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
         entry = ttk.Entry(frame, textvariable=variable, style="App.TEntry", width=12)
         entry.grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
@@ -537,16 +611,24 @@ class DeepWorkTimerApp:
         stats = self.store.get_stats()
         self.daily_value_label.configure(text=str(stats.daily_sessions))
         self.total_value_label.configure(text=str(stats.total_sessions))
-        self.daily_hours_value_label.configure(text=self._format_hours(stats.daily_minutes))
-        self.daily_hours_detail_label.configure(text=self._format_duration(stats.daily_minutes))
+        self.daily_hours_value_label.configure(
+            text=self._format_hours(stats.daily_minutes)
+        )
+        self.daily_hours_detail_label.configure(
+            text=self._format_duration(stats.daily_minutes)
+        )
         self.weekly_hours_value_label.configure(
             text=self._format_hours(stats.weekly_average_minutes)
         )
         self.weekly_hours_detail_label.configure(
             text=f"{self._format_duration(stats.weekly_average_minutes)} / week"
         )
-        self.total_hours_value_label.configure(text=self._format_hours(stats.total_minutes))
-        self.total_hours_detail_label.configure(text=self._format_duration(stats.total_minutes))
+        self.total_hours_value_label.configure(
+            text=self._format_hours(stats.total_minutes)
+        )
+        self.total_hours_detail_label.configure(
+            text=self._format_duration(stats.total_minutes)
+        )
         self.weekly_sessions_per_day_label.configure(
             text=f"{stats.sessions_per_day_last_week:.1f}"
         )
@@ -594,27 +676,58 @@ class DeepWorkTimerApp:
 
         self._update_timer_display()
 
-    def _get_config_from_inputs(self, show_errors: bool = True) -> Optional[TimerConfig]:
+    def _get_config_from_inputs(
+        self, show_errors: bool = True
+    ) -> Optional[TimerConfig]:
         try:
             work_minutes = int(self.work_var.get())
             rest_minutes = int(self.rest_var.get())
             rounds = int(self.rounds_var.get())
         except ValueError:
             if show_errors:
-                messagebox.showerror("Invalid settings", "Use whole numbers for all fields.")
+                messagebox.showerror(
+                    "Invalid settings", "Use whole numbers for all fields."
+                )
             return None
 
         if work_minutes <= 0:
             if show_errors:
-                messagebox.showerror("Invalid settings", "Work minutes must be greater than 0.")
+                messagebox.showerror(
+                    "Invalid settings", "Work minutes must be greater than 0."
+                )
+            return None
+        if work_minutes > MAX_WORK_MINUTES:
+            if show_errors:
+                messagebox.showerror(
+                    "Invalid settings",
+                    f"Work minutes must be {MAX_WORK_MINUTES} or less.",
+                )
             return None
         if rest_minutes < 0:
             if show_errors:
-                messagebox.showerror("Invalid settings", "Rest minutes cannot be negative.")
+                messagebox.showerror(
+                    "Invalid settings", "Rest minutes cannot be negative."
+                )
+            return None
+        if rest_minutes > MAX_REST_MINUTES:
+            if show_errors:
+                messagebox.showerror(
+                    "Invalid settings",
+                    f"Rest minutes must be {MAX_REST_MINUTES} or less.",
+                )
             return None
         if rounds <= 0:
             if show_errors:
-                messagebox.showerror("Invalid settings", "Rounds must be greater than 0.")
+                messagebox.showerror(
+                    "Invalid settings", "Rounds must be greater than 0."
+                )
+            return None
+        if rounds > MAX_ROUNDS:
+            if show_errors:
+                messagebox.showerror(
+                    "Invalid settings",
+                    f"Rounds must be {MAX_ROUNDS} or less.",
+                )
             return None
 
         return TimerConfig(
@@ -661,7 +774,9 @@ class DeepWorkTimerApp:
             self.pause_button.configure(text="Resume")
             self.start_button.configure(text="Resume", state="normal")
             self.phase_label.configure(text=f"{self._phase_title()} paused")
-            self.status_label.configure(text="Timer paused. Resume when you want to continue the block.")
+            self.status_label.configure(
+                text="Timer paused. Resume when you want to continue the block."
+            )
         elif self.is_paused:
             self.start_button.configure(text="Start Session", state="disabled")
             self.start_session()
