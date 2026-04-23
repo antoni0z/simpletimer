@@ -1,18 +1,9 @@
 import unittest
-from datetime import datetime, timedelta
-from pathlib import Path
-from tempfile import TemporaryDirectory
+from datetime import date, datetime
 from unittest.mock import Mock, patch
 
-from timer import (
-    DEFAULT_CONFIG,
-    MAX_REST_MINUTES,
-    MAX_ROUNDS,
-    MAX_WORK_MINUTES,
-    DeepWorkTimerApp,
-    SessionStore,
-    TimerConfig,
-)
+from store import MAX_REST_MINUTES, MAX_ROUNDS, MAX_WORK_MINUTES, TimerConfig
+from timer import DAY_CHANGE_CHECK_MS, DeepWorkTimerApp
 
 
 class FakeWidget:
@@ -51,93 +42,6 @@ class FakeRoot:
         return None
 
 
-class SessionStoreTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp_dir = TemporaryDirectory()
-        self.db_path = Path(self.temp_dir.name) / "test_timer.db"
-        self.store = SessionStore(self.db_path)
-
-    def tearDown(self) -> None:
-        self.store.close()
-        self.temp_dir.cleanup()
-
-    def _insert_session(self, completed_at: datetime, work_minutes: int) -> None:
-        self.store.connection.execute(
-            "INSERT INTO sessions(completed_at, work_minutes) VALUES (?, ?)",
-            (completed_at.strftime("%Y-%m-%d %H:%M:%S"), work_minutes),
-        )
-        self.store.connection.commit()
-
-    def test_default_config_is_returned_when_settings_are_empty(self) -> None:
-        self.assertEqual(self.store.get_saved_config(), DEFAULT_CONFIG)
-
-    def test_invalid_saved_settings_fall_back_to_defaults(self) -> None:
-        with self.store.connection:
-            self.store.connection.executemany(
-                "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
-                [
-                    ("work_minutes", "abc"),
-                    ("rest_minutes", "-5"),
-                    ("rounds", str(MAX_ROUNDS + 1)),
-                ],
-            )
-
-        self.assertEqual(self.store.get_saved_config(), DEFAULT_CONFIG)
-
-    def test_saved_config_round_trips_exactly(self) -> None:
-        config = TimerConfig(work_minutes=90, rest_minutes=15, rounds=3)
-
-        self.store.save_config(config)
-
-        self.assertEqual(self.store.get_saved_config(), config)
-
-    def test_empty_store_reports_zero_stats(self) -> None:
-        stats = self.store.get_stats()
-
-        self.assertEqual(stats.daily_sessions, 0)
-        self.assertEqual(stats.total_sessions, 0)
-        self.assertEqual(stats.daily_minutes, 0)
-        self.assertEqual(stats.weekly_average_minutes, 0.0)
-        self.assertEqual(stats.total_minutes, 0)
-        self.assertEqual(stats.sessions_per_day_last_week, 0.0)
-        self.assertEqual(stats.average_minutes_per_day_last_week, 0.0)
-
-    def test_record_work_session_updates_daily_and_total_stats(self) -> None:
-        self.store.record_work_session(15)
-
-        stats = self.store.get_stats()
-
-        self.assertEqual(stats.daily_sessions, 1)
-        self.assertEqual(stats.total_sessions, 1)
-        self.assertEqual(stats.daily_minutes, 15)
-        self.assertEqual(stats.total_minutes, 15)
-        self.assertAlmostEqual(stats.sessions_per_day_last_week, 1 / 7)
-        self.assertAlmostEqual(stats.average_minutes_per_day_last_week, 15 / 7)
-
-    def test_record_work_session_rejects_out_of_range_values(self) -> None:
-        with self.assertRaises(ValueError):
-            self.store.record_work_session(0)
-
-        with self.assertRaises(ValueError):
-            self.store.record_work_session(MAX_WORK_MINUTES + 1)
-
-    def test_stats_respect_time_windows_and_totals(self) -> None:
-        now = datetime.now()
-        self._insert_session(now, 25)
-        self._insert_session(now - timedelta(days=2), 35)
-        self._insert_session(now - timedelta(days=8), 40)
-
-        stats = self.store.get_stats()
-
-        self.assertEqual(stats.daily_sessions, 1)
-        self.assertEqual(stats.total_sessions, 3)
-        self.assertEqual(stats.daily_minutes, 25)
-        self.assertEqual(stats.total_minutes, 100)
-        self.assertAlmostEqual(stats.weekly_average_minutes, 50.0)
-        self.assertAlmostEqual(stats.sessions_per_day_last_week, 2 / 7)
-        self.assertAlmostEqual(stats.average_minutes_per_day_last_week, 60 / 7)
-
-
 class FormattingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.app = DeepWorkTimerApp.__new__(DeepWorkTimerApp)
@@ -162,11 +66,13 @@ class TimerBehaviorTests(unittest.TestCase):
         app.saved_config = TimerConfig(50, 10, 4)
         app.config = TimerConfig(25, 5, 3)
         app.timer_after_id = None
+        app.day_change_after_id = None
         app.is_running = True
         app.is_paused = False
         app.phase = "work"
         app.current_round = 1
         app.remaining_seconds = 25 * 60
+        app.stats_date = date(2026, 4, 23)
         app.start_button = FakeWidget()
         app.pause_button = FakeWidget()
         app.reset_button = FakeWidget()
@@ -301,6 +207,19 @@ class TimerBehaviorTests(unittest.TestCase):
         self.assertEqual(app.remaining_seconds, 0)
         app._advance_phase.assert_called_once_with()
 
+    def test_day_change_check_refreshes_stats_and_reschedules(self) -> None:
+        app = self.make_app()
+        app._refresh_stats = Mock()
+
+        with patch("timer.datetime") as fake_datetime:
+            fake_datetime.now.return_value = datetime(2026, 4, 24, 0, 1, 0)
+            app._check_for_day_change()
+
+        app._refresh_stats.assert_called_once_with()
+        self.assertEqual(app.root.after_calls[0][0], DAY_CHANGE_CHECK_MS)
+        self.assertEqual(app.timer_after_id, None)
+        self.assertEqual(app.day_change_after_id, "after-1")
+
     def test_pause_cancels_scheduled_tick(self) -> None:
         app = self.make_app()
         app.timer_after_id = "after-3"
@@ -313,6 +232,16 @@ class TimerBehaviorTests(unittest.TestCase):
         self.assertEqual(app.pause_button.options["text"], "Resume")
         self.assertEqual(app.start_button.options["text"], "Resume")
         self.assertEqual(app.start_button.options["state"], "normal")
+
+    def test_on_close_cancels_timer_and_day_change_callbacks(self) -> None:
+        app = self.make_app()
+        app.timer_after_id = "after-3"
+        app.day_change_after_id = "after-4"
+
+        app.on_close()
+
+        self.assertEqual(app.root.cancelled, ["after-3", "after-4"])
+        app.store.close.assert_called_once_with()
 
 
 class InputValidationTests(unittest.TestCase):
