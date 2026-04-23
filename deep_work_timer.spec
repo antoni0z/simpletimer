@@ -45,6 +45,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="Deep Work Timer.app",
-    icon=None,
+    icon="assets/app_icon.icns",
     bundle_identifier="io.github.antoni0z.simpletimer",
 )
