@@ -11,3 +11,10 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Packaging output
+build/
+dist/
+Deep Work Timer-macOS.zip
+dist
+build

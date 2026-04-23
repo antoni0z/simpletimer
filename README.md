@@ -38,6 +38,24 @@ python3 timer.py
 python3 -m unittest discover -s tests
 ```
 
+## Download
+
+You can either run the app locally with Python or download the macOS build artifact from GitHub Actions.
+
+## Build A macOS App
+
+```bash
+python3 -m pip install -r requirements-build.txt
+python3 -m PyInstaller --clean --noconfirm deep_work_timer.spec
+```
+
+The app bundle is written to `dist/Deep Work Timer.app`.
+
+## CI/CD
+
+- GitHub Actions publishes a macOS zip artifact for successful builds.
+- Tags like `v1.0.0` also publish a GitHub release.
+
 ## Notes
 
 - The app stores local data in `~/Library/Application Support/DeepWorkTimer/timer.db` on macOS.
