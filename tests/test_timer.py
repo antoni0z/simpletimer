@@ -68,7 +68,6 @@ class TimerBehaviorTests(unittest.TestCase):
         app.timer_after_id = None
         app.day_change_after_id = None
         app.is_running = True
-        app.is_paused = False
         app.phase = "work"
         app.current_round = 1
         app.remaining_seconds = 25 * 60
@@ -115,7 +114,6 @@ class TimerBehaviorTests(unittest.TestCase):
 
         app.store.record_work_session.assert_called_once_with(25)
         self.assertFalse(app.is_running)
-        self.assertFalse(app.is_paused)
         self.assertEqual(app.phase, "complete")
         self.assertEqual(app.start_button.options["state"], "normal")
         self.assertEqual(app.pause_button.options["state"], "disabled")
@@ -163,7 +161,6 @@ class TimerBehaviorTests(unittest.TestCase):
         app.timer_after_id = "after-9"
         app.phase = "work"
         app.is_running = True
-        app.is_paused = True
         app.current_round = 3
         app.config = TimerConfig(25, 5, 3)
         app._update_timer_display = Mock()
@@ -172,7 +169,6 @@ class TimerBehaviorTests(unittest.TestCase):
 
         self.assertEqual(app.root.cancelled, ["after-9"])
         self.assertFalse(app.is_running)
-        self.assertFalse(app.is_paused)
         self.assertEqual(app.phase, "ready")
         self.assertIsNone(app.config)
         self.assertEqual(app.current_round, 1)
@@ -227,7 +223,6 @@ class TimerBehaviorTests(unittest.TestCase):
         app.toggle_pause()
 
         self.assertFalse(app.is_running)
-        self.assertTrue(app.is_paused)
         self.assertEqual(app.root.cancelled, ["after-3"])
         self.assertEqual(app.pause_button.options["text"], "Resume")
         self.assertEqual(app.start_button.options["text"], "Resume")

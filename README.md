@@ -2,7 +2,7 @@
 
 Deep Work Timer is a small local-first macOS desktop timer for structured focus sessions. It uses only Python standard library modules, so there are no external package dependencies to install before running it.
 
-The app does not make network requests, does not execute shell commands, and keeps all session data on the local machine.
+The app does not make network requests and keeps all session data on the local machine. It invokes local macOS tools for notifications and sound alerts.
 
 ## What It Uses
 
@@ -29,13 +29,13 @@ cd simpletimer
 ## Run
 
 ```bash
-python3 timer.py
+make run
 ```
 
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests
+make test
 ```
 
 ## Download
@@ -46,10 +46,18 @@ You can either run the app locally with Python or download the macOS build artif
 
 ```bash
 python3 -m pip install -r requirements-build.txt
-python3 -m PyInstaller --clean --noconfirm deep_work_timer.spec
+make build
 ```
 
 The app bundle is written to `dist/Deep Work Timer.app`.
+
+## Publish A Release
+
+```bash
+make publish BUMP=patch
+```
+
+Use `BUMP=patch`, `BUMP=minor`, or `BUMP=major`. The publish command requires a clean working tree, runs tests, updates `version.py`, creates a release commit and `vX.Y.Z` tag, then pushes the commit and tag. GitHub Actions builds the downloadable macOS app and attaches it to the tagged release.
 
 ## CI/CD
 

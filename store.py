@@ -20,6 +20,11 @@ class TimerConfig:
 
 
 DEFAULT_CONFIG = TimerConfig(work_minutes=90, rest_minutes=15, rounds=4)
+CONFIG_LIMITS = (
+    ("work_minutes", "Work minutes", 1, MAX_WORK_MINUTES),
+    ("rest_minutes", "Rest minutes", 0, MAX_REST_MINUTES),
+    ("rounds", "Rounds", 1, MAX_ROUNDS),
+)
 
 
 @dataclass
@@ -42,13 +47,22 @@ def _app_data_dir() -> Path:
 DB_PATH = _app_data_dir() / "timer.db"
 
 
-def _validate_config(config: TimerConfig) -> None:
-    if not 1 <= config.work_minutes <= MAX_WORK_MINUTES:
-        raise ValueError("work_minutes must be within the supported range")
-    if not 0 <= config.rest_minutes <= MAX_REST_MINUTES:
-        raise ValueError("rest_minutes must be within the supported range")
-    if not 1 <= config.rounds <= MAX_ROUNDS:
-        raise ValueError("rounds must be within the supported range")
+def get_config_error(config: TimerConfig) -> str | None:
+    for field_name, label, minimum, maximum in CONFIG_LIMITS:
+        value = getattr(config, field_name)
+        if value < minimum:
+            if minimum == 0:
+                return f"{label} cannot be negative."
+            return f"{label} must be greater than 0."
+        if value > maximum:
+            return f"{label} must be {maximum} or less."
+    return None
+
+
+def validate_config(config: TimerConfig) -> None:
+    error = get_config_error(config)
+    if error is not None:
+        raise ValueError(error)
 
 
 class SessionStore:
@@ -95,31 +109,20 @@ class SessionStore:
         rows = self.connection.execute("SELECT key, value FROM settings").fetchall()
         values = {row["key"]: row["value"] for row in rows}
         return TimerConfig(
-            work_minutes=self._coerce_setting(
-                values,
-                "work_minutes",
-                DEFAULT_CONFIG.work_minutes,
-                1,
-                MAX_WORK_MINUTES,
-            ),
-            rest_minutes=self._coerce_setting(
-                values,
-                "rest_minutes",
-                DEFAULT_CONFIG.rest_minutes,
-                0,
-                MAX_REST_MINUTES,
-            ),
-            rounds=self._coerce_setting(
-                values,
-                "rounds",
-                DEFAULT_CONFIG.rounds,
-                1,
-                MAX_ROUNDS,
-            ),
+            **{
+                field_name: self._coerce_setting(
+                    values,
+                    field_name,
+                    getattr(DEFAULT_CONFIG, field_name),
+                    minimum,
+                    maximum,
+                )
+                for field_name, _label, minimum, maximum in CONFIG_LIMITS
+            }
         )
 
     def save_config(self, config: TimerConfig) -> None:
-        _validate_config(config)
+        validate_config(config)
         items = {
             "work_minutes": str(config.work_minutes),
             "rest_minutes": str(config.rest_minutes),

@@ -8,14 +8,14 @@ from typing import Optional
 
 from store import (
     DB_PATH,
-    MAX_REST_MINUTES,
-    MAX_ROUNDS,
-    MAX_WORK_MINUTES,
     SessionStore,
     TimerConfig,
+    get_config_error,
 )
+from version import __version__
 
 APP_NAME = "Deep Work Timer"
+APP_TITLE = f"{APP_NAME} {__version__}"
 OSASCRIPT_BIN = "/usr/bin/osascript"
 AFPLAY_BIN = "/usr/bin/afplay"
 MACOS_ALERT_SOUND = "/System/Library/Sounds/Glass.aiff"
@@ -31,14 +31,14 @@ class DeepWorkTimerApp:
         self.timer_after_id: Optional[str] = None
         self.day_change_after_id: Optional[str] = None
         self.config: Optional[TimerConfig] = None
+        self.input_entries: list[ttk.Entry] = []
         self.is_running = False
-        self.is_paused = False
         self.phase = "ready"
         self.current_round = 1
         self.remaining_seconds = self.saved_config.work_minutes * 60
         self.stats_date: Optional[date] = None
 
-        self.root.title(APP_NAME)
+        self.root.title(APP_TITLE)
         self.root.geometry("860x760")
         self.root.minsize(780, 740)
         self.root.configure(bg="#ece7df")
@@ -375,40 +375,15 @@ class DeepWorkTimerApp:
             row=6, column=2, sticky="w", pady=(6, 4)
         )
 
-        self.daily_hours_value_label = ttk.Label(
-            stats_card, text="0.0h", style="Metric.TLabel"
+        self.daily_hours_value_label, self.daily_hours_detail_label = (
+            self._build_metric_labels(stats_card, 0, "0.0h", "0m")
         )
-        self.daily_hours_value_label.grid(row=7, column=0, sticky="nw")
-        self.daily_hours_detail_label = ttk.Label(
-            stats_card,
-            text="0m",
-            style="MetricDetail.TLabel",
+        self.weekly_hours_value_label, self.weekly_hours_detail_label = (
+            self._build_metric_labels(stats_card, 1, "0.0h", "0m / week")
         )
-        self.daily_hours_detail_label.grid(row=8, column=0, sticky="nw", pady=(6, 0))
-
-        self.weekly_hours_value_label = ttk.Label(
-            stats_card,
-            text="0.0h",
-            style="Metric.TLabel",
+        self.total_hours_value_label, self.total_hours_detail_label = (
+            self._build_metric_labels(stats_card, 2, "0.0h", "0m")
         )
-        self.weekly_hours_value_label.grid(row=7, column=1, sticky="nw")
-        self.weekly_hours_detail_label = ttk.Label(
-            stats_card,
-            text="0m / week",
-            style="MetricDetail.TLabel",
-        )
-        self.weekly_hours_detail_label.grid(row=8, column=1, sticky="nw", pady=(6, 0))
-
-        self.total_hours_value_label = ttk.Label(
-            stats_card, text="0.0h", style="Metric.TLabel"
-        )
-        self.total_hours_value_label.grid(row=7, column=2, sticky="nw")
-        self.total_hours_detail_label = ttk.Label(
-            stats_card,
-            text="0m",
-            style="MetricDetail.TLabel",
-        )
-        self.total_hours_detail_label.grid(row=8, column=2, sticky="nw", pady=(6, 0))
 
     def _build_labeled_entry(
         self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar
@@ -422,6 +397,16 @@ class DeepWorkTimerApp:
         )
         entry = ttk.Entry(frame, textvariable=variable, style="App.TEntry", width=12)
         entry.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.input_entries.append(entry)
+
+    def _build_metric_labels(
+        self, parent: ttk.Frame, column: int, value_text: str, detail_text: str
+    ) -> tuple[ttk.Label, ttk.Label]:
+        value_label = ttk.Label(parent, text=value_text, style="Metric.TLabel")
+        value_label.grid(row=7, column=column, sticky="nw")
+        detail_label = ttk.Label(parent, text=detail_text, style="MetricDetail.TLabel")
+        detail_label.grid(row=8, column=column, sticky="nw", pady=(6, 0))
+        return value_label, detail_label
 
     def _refresh_stats(self) -> None:
         stats = self.store.get_stats()
@@ -497,9 +482,11 @@ class DeepWorkTimerApp:
         self, show_errors: bool = True
     ) -> Optional[TimerConfig]:
         try:
-            work_minutes = int(self.work_var.get())
-            rest_minutes = int(self.rest_var.get())
-            rounds = int(self.rounds_var.get())
+            config = TimerConfig(
+                work_minutes=int(self.work_var.get()),
+                rest_minutes=int(self.rest_var.get()),
+                rounds=int(self.rounds_var.get()),
+            )
         except ValueError:
             if show_errors:
                 messagebox.showerror(
@@ -507,51 +494,13 @@ class DeepWorkTimerApp:
                 )
             return None
 
-        if work_minutes <= 0:
+        error = get_config_error(config)
+        if error is not None:
             if show_errors:
-                messagebox.showerror(
-                    "Invalid settings", "Work minutes must be greater than 0."
-                )
-            return None
-        if work_minutes > MAX_WORK_MINUTES:
-            if show_errors:
-                messagebox.showerror(
-                    "Invalid settings",
-                    f"Work minutes must be {MAX_WORK_MINUTES} or less.",
-                )
-            return None
-        if rest_minutes < 0:
-            if show_errors:
-                messagebox.showerror(
-                    "Invalid settings", "Rest minutes cannot be negative."
-                )
-            return None
-        if rest_minutes > MAX_REST_MINUTES:
-            if show_errors:
-                messagebox.showerror(
-                    "Invalid settings",
-                    f"Rest minutes must be {MAX_REST_MINUTES} or less.",
-                )
-            return None
-        if rounds <= 0:
-            if show_errors:
-                messagebox.showerror(
-                    "Invalid settings", "Rounds must be greater than 0."
-                )
-            return None
-        if rounds > MAX_ROUNDS:
-            if show_errors:
-                messagebox.showerror(
-                    "Invalid settings",
-                    f"Rounds must be {MAX_ROUNDS} or less.",
-                )
+                messagebox.showerror("Invalid settings", error)
             return None
 
-        return TimerConfig(
-            work_minutes=work_minutes,
-            rest_minutes=rest_minutes,
-            rounds=rounds,
-        )
+        return config
 
     def start_session(self) -> None:
         if self.is_running:
@@ -572,7 +521,6 @@ class DeepWorkTimerApp:
             return
 
         self.is_running = True
-        self.is_paused = False
         self.pause_button.configure(text="Pause", state="normal")
         self.reset_button.configure(state="normal")
         self.start_button.configure(text="Start Session", state="disabled")
@@ -586,7 +534,6 @@ class DeepWorkTimerApp:
 
         if self.is_running:
             self.is_running = False
-            self.is_paused = True
             self._cancel_scheduled_tick()
             self.pause_button.configure(text="Resume")
             self.start_button.configure(text="Resume", state="normal")
@@ -594,7 +541,7 @@ class DeepWorkTimerApp:
             self.status_label.configure(
                 text="Timer paused. Resume when you want to continue the block."
             )
-        elif self.is_paused:
+        else:
             self.start_button.configure(text="Start Session", state="disabled")
             self.start_session()
 
@@ -602,7 +549,6 @@ class DeepWorkTimerApp:
         self._cancel_scheduled_tick()
 
         self.is_running = False
-        self.is_paused = False
         self.phase = "ready"
         self.config = None
         self.current_round = 1
@@ -632,14 +578,8 @@ class DeepWorkTimerApp:
             self.timer_after_id = None
 
     def _set_inputs_state(self, state: str) -> None:
-        for child in self.root.winfo_children():
-            self._set_entry_state_recursive(child, state)
-
-    def _set_entry_state_recursive(self, widget: tk.Misc, state: str) -> None:
-        if isinstance(widget, ttk.Entry):
-            widget.configure(state=state)
-        for child in widget.winfo_children():
-            self._set_entry_state_recursive(child, state)
+        for entry in self.input_entries:
+            entry.configure(state=state)
 
     def _schedule_tick(self) -> None:
         if self.is_running:
@@ -697,7 +637,6 @@ class DeepWorkTimerApp:
 
                 if self.current_round >= self.config.rounds:
                     self.is_running = False
-                    self.is_paused = False
                     self.phase = "complete"
                     self.start_button.configure(text="Start Session", state="normal")
                     self.pause_button.configure(text="Pause", state="disabled")
